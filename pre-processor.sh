@@ -17,6 +17,8 @@ Mac OS X files can have resource forks (courtesy of HFS+ filesystem)
 
 Using the OS X tar utility allows packaging the file into a *.tgz file for archiving to prevent the loss of these.
 
+Note that you can only restore the resource forks if you are restoring to a HFS+ filesystem. This is presumably done on a Mac in the first place too. tar utilities other than that bundled with OS X may not support writing the resource forks back.... you are warned.
+
 ---split files larger than 4GB into smaller files
 
 The FAT32 file system has an upper limit of 4GB per file.
@@ -26,15 +28,14 @@ We split these large files using the "split" utility after saving the MD5 sum an
 
 OPTIONS
 
--b specifies archival/backup mode - hunts for resource forks and large files. Simply excludes the original files without deleting them. Hardlinks not recognized at the moment -- 2 files hardlinked to the same data will become 2 separate files in this backup process. To remove original files and leave their archival copies in place, specify --rmexclude as final option
+-b specifies backup mode - hunts for resource forks and large files. Simply excludes the original files without deleting them. Hardlinks not recognized at the moment -- 2 files hardlinked to the same data will become 2 separate files in this backup process. To remove original files and leave their archival copies in place, specify --rmexclude as final option
 
 -r specifies restore mode - hunts for *.master.split and *.rsrcfork.tgz files to restore them. By default removes these files unless --keeprawbkp is specified as final option
 
 
 BACKUP
 
-Uses rsync to perform the backup
-Uses options -avz and an exclusion file
+Uses rsync to perform the backup, with options -avz and an exclusion file
 
 EOF
 
@@ -49,14 +50,14 @@ maybefail() { # arg1=exit code // arg2=message
 
 touchorfail() { # argument - path to file to touch
 	touch $1
-	maybefail $? $1
+	maybefail $? "Could not create temp file for exclusion: $1"
 }
 
 # serious issues with this command when testing in OS X terminal shell. retest as script
 filesize() {
 	if [ $ISMAC = 'yes' ]; then
 		echo $(stat -s $1 | sed -E -e "s/.*st_size=([0-9]+).*/\1/")
-	else
+	else # assumes Linux
 		echo $(stat -c%s $1)
 	fi
 }
@@ -91,9 +92,9 @@ getmd5() {
 rexclude() {
 	# exclude a file, then check if it should also be deleted
 	echo $1 >> $BKPEXCLUSIONS
-	if [ 'empty'"$(echo $@ | grep -e "--rmexclude")" != 'empty' ]; then
+	if [ 'empty'"$(echo $@ | grep -e \"--rmexclude\")" != 'empty' ]; then # is this syntax nesting properly?
 		rm $1 # do not use force.
-		if [ $? -ne 0 ]; then echo "Could not delete $1"; fi
+		if [ $? -ne 0 ]; then echo "Could not delete $1 for exclusion"; fi
 	fi
 }
 
@@ -149,37 +150,42 @@ RSRC_CHECK=$(hasrsrc $RSRCTARS)
 echo "Check for resources? --> $RSRC_CHECK"
 
 # ==============================
-# now start recursing
+# the actual backup and restore processes
 
-# recurse DIR
-recurdir() {
+# recurse DIR for prep to archive
+# $1 is the directory we want to process
+prearchive() {
+	CURDIR=$1
+	cd "$CURDIR"
 	# if RSRC_CHECK
 	if [ '_'$RSRC_CHECK = '_yes' ]; then
 		# iterate over FILES
 		for NODE in *; do
-			if [ -d $NODE ]; then continue; fi
+			if [ -d "$NODE" ]; then continue; fi
 			# if FILE has resource fork
-			if [ hasrsrc $NODE = 'yes' ]; then
+			if [ hasrsrc "$NODE" = 'yes' ]; then
 				# compress as TGZ
 				tar -cf "${NODE}.rsrcfork.tgz" "$NODE"
 				# exclude original FILE
-				rexclude $(powd)/$NODE
+				rexclude "$CURDIR/$NODE"
 			fi
 		done
 	fi
 
-	# iterate over FILES (again)
+	# iterate over both files and directories
 	for NODE in *; do
+		if [ -d "$NODE" ]; then
+			prearchive "$NODE"
 		# if FILE larger than 4000000 bytes
-		if [ filesize $NODE -gt 4294967295 ]; then
+		if [ filesize "$NODE" -gt 4294967295 ]; then
 			# random string STRP
 			STRP=$(randomString)
 			# get MD5 and write STRP + md5 + file name to <STRP>.master.split
 			echo $STRP $(getmd5 $NODE) $NODE > $STRP.master.split
 			# split with <STRP> as prefix
-			split -b 4000m $NODE $STRP-
+			split -b 4000m "$NODE" "${STRP}-" # use explicitly 4000M instead of 4G to be safe
 			# exclude original FILE
-			rexclude $(powd)
+			rexclude "$CURDIR"
 		fi
 	done
 	
@@ -187,8 +193,10 @@ recurdir() {
 	# ......
 }
 
+restorearchive() {
+}
+
 # TO DO
-# recurse directories in archive
 # restore script
 # archive vs restore modes
 

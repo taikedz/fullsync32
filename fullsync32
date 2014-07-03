@@ -1,0 +1,128 @@
+#! /bin/bash
+
+alias fullsync32rsync='rsync -avz'
+
+cat <<EOF
+Rsync post-processor for backing up Linux and Mac filesystems to FAT32
+
+$0 { -b | -r } -live=LVIEDIR -archive=ARCHIVEDIR
+
+LIVEDIR is the directory that is normally in use.
+ARCHIVEDIR is the directory on the backup medium.
+
+Building on top of rsync, this post-processor will ensure files with resource forks are preserved (when backing up Mac files), and will split large files into chunks less than 4GB
+
+The post-processor is then also used during restore process, where the middle-files are excluded from the rsync restore, and then unpacked directly to disk.
+
+To override the rsync behaviour, set an alias for fullsync32rsync
+
+By default, this will otherwise be
+
+$(alias fullsync32rsync)
+
+With exclusion files passed to it.
+
+OPTIONS
+
+-b specifies backup mode - hunts for resource forks and large files. Hardlinks not recognized at the moment -- 2 files hardlinked to the same data will become 2 separate files in this backup process.
+
+-r specifies restore mode - hunts for middle files in the backup to restore them straight to disk.
+
+
+EOF
+
+# ==============================
+# generalized handles
+
+maybefail() { # arg1=exit code // arg2=message
+	if [ $1 != 0 ]; then echo "$2"; exit 1; fi
+}
+
+touchorfail() { # argument - path to file to touch
+	touch $1
+	maybefail $? "Could not create temp file for exclusion: $1"
+}
+
+# serious issues with this command when testing in OS X terminal shell. retest as script
+filesize() {
+	if [ $ISMAC = 'yes' ]; then
+		echo $(stat -s $1 | sed -E -e "s/.*st_size=([0-9]+).*/\1/")
+	else # assumes Linux
+		echo $(stat -c%s $1)
+	fi
+}
+
+function randomString {
+	# adapted from http://utdream.org/post.cfm/bash-generate-a-random-string
+	
+	# if a param was passed, it's the length of the string we want
+	if [[ -n $1 ]] && [[ "$1" -lt 20 ]]; then
+		local myStrLength=$1;
+	else
+		# otherwise set to default
+		local myStrLength=8;
+	fi
+
+	local mySeedNumber=$$`date +%N`; # seed will be the pid + nanoseconds
+	local myRandomString=$( echo $mySeedNumber | md5sum | md5sum );
+	# create our actual random string
+	echo "${myRandomString:2:myStrLength}"
+}
+
+getmd5() {
+	NODE=$1
+	local md5res=$(md5sum $NODE)
+	if [ $ISMAC = 'yes' ]; then
+		echo $md5res | sed -E -e 's/MD5 \(.+\) = (.+)$/\1/g')
+	else
+		echo $md5res | sed -E -e 's/^(.+) .+/\1/g')
+	fi
+}
+
+# ==============================
+# necessary temp files and vars
+
+ISMAC=''
+if [ 'empty'$(echo $OSTYPE | grep darwin) != 'empty' ]; then
+	ISMAC="yes";
+	else ISMAC="no";
+fi
+
+if [ $ISMAC = 'yes' ]; then
+	alias md5sum='md5'
+fi
+
+# ==============================
+# resource fork identification
+# OS X uses the resource fork construct on some files, which is a hangover from design from the Mac OS Classic days.
+# files with resource forks are found on OS X systems, which have their own TAR that can handle them
+# TAR the files; exclude the originals
+
+
+RSRCSTR="/..namedfork/rsrc"
+if [ $ISMAC = 'yes' ]; then
+	if [ "old"$(sw_vers | grep -Po "10\.[0-6]\.") = "old" ]; then
+		RSRCSTR="/rsrc" # different format pre-10.7
+	fi
+fi
+
+hasrsrc() {
+	MYFILE="$1$RSRCSTR"
+	FOUNDRES=yes$(ls -l "$MYFILE" | grep -Po "0\s+[0-9]+\s+[a-zA-Z]");
+	# resource fork found to be zero length - returns string
+
+	# FOUNDRES is exactly "yes" if resource is non-zero
+	if [ "$FOUNDRES" = "yes" ]; then
+		echo "yes"
+	else
+		echo "no"
+	fi
+}
+# ==============================
+# check for RSRC presence
+
+RSRC_CHECK=$(hasrsrc $RSRCTARS)
+# echo "Check for resources? --> $RSRC_CHECK"
+
+# ==============================
+# Now do the actual work.

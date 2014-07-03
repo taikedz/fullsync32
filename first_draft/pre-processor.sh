@@ -9,6 +9,11 @@ $0 -r -archive=ARCHIVEDIR -live-LIVEDIR [--keeprawbkp]
 LIVEDIR is the directory that is normally in use.
 ARCHIVEDIR is the directory on the backup medium.
 
+The handling of the pre-processing creates additional files inplace on the disk; if you are running low on space, you might want to archive what you know does not need pre-processing (MP3 collection for example, so long as they don't have any super-large files), remove it, and archive the rest.
+
+To stymmie this effect, the "deletion rather than exclusion" option is added; which causes any TAR'd and SPLIT'd files to be removed; they are subsequently restored after the backup process. This obviously has repercussions on disk usage and processing time.
+
+
 Pre-process the directories to backup:
 
 ---TAR files that have resource forks into archives to preserve these
@@ -180,7 +185,7 @@ prearchive() {
 		if [ filesize "$NODE" -gt 4294967295 ]; then
 			# random string STRP
 			STRP=$(randomString)
-			# get MD5 and write STRP + md5 + file name to <STRP>.master.split
+			# get MD5 and write [ STRP + md5 + file name ] to <STRP>.master.split
 			echo $STRP $(getmd5 $NODE) $NODE > $STRP.master.split
 			# split with <STRP> as prefix
 			split -b 4000m "$NODE" "${STRP}-" # use explicitly 4000M instead of 4G to be safe
@@ -193,12 +198,24 @@ prearchive() {
 	# ......
 }
 
+# task performed on live directory, after the restore has taken place.
+# must cater for pre-existing files
 restorearchive() {
+	CURDIR="$1"
+	cd "$CURDIR"
+	
+	for NODE in *; do
+		if [ -d "$NODE" ]; then
+			restorearchive "$NODE"
+		else
+			echo next
+		fi
+	done
 }
 
 # TO DO
 # restore script
 # archive vs restore modes
 
-# archive is: recur dir, rsync, process backup intermediaries (with checksumming)
-# 
+# archive is: prearchive, rsync, remove backup intermediaries
+# restore is: rsync, restorearchive, use checksums to prevent squash

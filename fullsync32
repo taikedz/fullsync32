@@ -126,3 +126,15 @@ RSRC_CHECK=$(hasrsrc $RSRCTARS)
 
 # ==============================
 # Now do the actual work.
+
+# pass as $1 the live directory to process
+# pass as $2 the corresponding archive directory
+backup() {
+	cd "$1"
+	
+	for NODE in *; do
+		if [ -d "$NODE" ]; then
+			
+		fi
+	done
+}

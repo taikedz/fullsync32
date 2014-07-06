@@ -35,7 +35,7 @@ EOF
 # generalized handles
 
 maybefail() { # arg1=exit code // arg2=message
-	if [ $1 != 0 ]; then echo "$2"; exit 1; fi
+	if [ $1 != 0 ]; then echoerror "$2"; exit 1; fi
 }
 
 touchorfail() { # argument - path to file to touch
@@ -150,25 +150,30 @@ splitlarge() {
 
 # pass as $1 the live directory to process
 # pass as $2 the corresponding archive directory
+# both must be absolute
 f32backup() {
 	cd "$1"
 	if [ ! -d "$2" ]; then # test with a large file in subdirectory, as only file
+		
+		# rsync did not create the directory... what's the problem here...?
 		echoerror "The archive directory does not exist"
 		exit 2
 	fi
 	
 	for NODE in *; do
 		if [ -d "$NODE" ]; then
-			f32backup "${1}${NODE}" "${2}${NODE}"
+			f32backup "${1}/${NODE}" "${2}/${NODE}"
 			continue
 		fi
-		LGNODE=$NODE
+		LGNODE=$NODE # the NODE that is the large file to process
 		
 		# check resource
 		if [ $(hasrsrc "$NODE") = "yes" ]; then
 			# process resources
 			tar -xzf "$NODE.rsrc" "$NODE"
-			LGNODE="$NODE.rsrc" # process the rsrc instead when checking size
+			
+			# process the rsrc instead of the original, when checking size
+			LGNODE="$NODE.rsrc"
 		fi
 		
 		if [ $(filesize "$LGNODE") -gt 4000000000 ]; then
@@ -180,7 +185,9 @@ f32backup() {
 			echo $(getmd5 "$LGNODE") > "./${SPLITPREFIX}-md5"
 			fullsync32rsync "$SPLITPREFIX"* "$DEST" # glob on the outside :-)
 			# TODO -- error handling if rsync failed
-			# remove the split files
+			# TODO -- handling hardlinks
+			
+			# cleanup the split files
 			rm "$SPLITPREFIX"*
 		fi
 		
@@ -193,26 +200,40 @@ f32backup() {
 
 # arg1 backup directory
 # arg2 live directory
+# we need both to be absolute
 f32restore() {
 	cd "$1"
-	if [ ! -d "$2" ]; then # test with a large file in subdirectory, as only file
-		echoerror "The archive directory does not exist"
-		exit 2
+	if [ ! -d "$2" ]; then
+		# rsync didn't recreate this directory for some reason
+		# should we really override?
+		# current reasoning: a file is in the backup because we want it restored. mkdir.
+		mkdir "$2"
+		
+		# TODO -- verify the permissions on the created directory
 	fi
 	
 	for NODE in *.split-md5; do
-		if [ ${NODE#*.} = 'rsrc.split-md5' ]; then # hold on, not sure this is the correct syntax
+		# use deletion pattern to remove last two extensions
+		SUBNODE=${FNAM%%.split-md5} # returns name before .split-md5
+		if [ ${SUBNODE##*.} = 'rsrc' ]; then
+			# using tar - switch to destination directory
+			pushd "$2"
 			# cat the split to tar -x
-			cat ${}
+			cat "$1/${SUBNODE}.split.*" | tar -x
+			popd # back to the archive location
 		else
+			# if no change then don't bother
+			if [ $(cat $NODE) = $(getmd5 "$2/$SUBNODE") ]; then continue; fi
 			# cat straight to destination
+			# SUBNODE is name without the split extension, use it
+			cat "$1/${SUBNODE}.split.*" > "$2/$SUBNODE"
 		fi
 	done
 	
 	# and recurse
 	for NODE in *; do
 		if [ -d "$NODE" ]; then
-			f32restore "${1}${NODE}" "${2}${NODE}"
+			f32restore "${1}/${NODE}" "${2}/${NODE}"
 		fi
 	done
 }

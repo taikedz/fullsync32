@@ -241,27 +241,42 @@ f32restore() {
 		# rsync didn't recreate this directory for some reason
 		# should we really override?
 		# current reasoning: a file is in the backup because we want it restored. mkdir.
-		mkdir "$2"
+		mkdir -p "$2"
 		
 		# TODO -- verify the permissions on the created directory
 	fi
 	
 	for NODE in *.fullsync32split-md5; do
+		# the pattern itself is returned if no files present
+		if [ ! -e "$NODE" ]; then break; fi
+		
 		# use deletion pattern to remove last two extensions
-		SUBNODE=${FNAM%%.split-md5} # returns name before .split-md5
+		SUBNODE=${NODE%%.fullsync32split-md5} # returns name before .fullsync32split-md5
+		echotest Processing $NODE and checking for "${SUBNODE##*.}"
 		if [ "${SUBNODE##*.}" = 'fullsync32rsrc' ]; then
 			# using tar - switch to destination directory
 			pushd "$2"
 			# cat the split to tar -x
-			cat "$1/${SUBNODE}.fullsync32split.*" | tar -x
+			cat "$1/${SUBNODE}.fullsync32rsrc."* | tar -x
 			popd # back to the archive location
 		else
 			# if no change then don't bother
-			if [ $(cat $NODE) = $(getmd5 "$2/$SUBNODE") ]; then continue; fi
+			if [ -f "$NODE" ]; then
+				if [ $(cat "$NODE") = $(getmd5 "$2/$SUBNODE") ]; then continue; fi
+			fi
 			# cat straight to destination
 			# SUBNODE is name without the split extension, use it
-			cat "$1/${SUBNODE}.fullsync32split.*" > "$2/$SUBNODE"
+			cat "$1/${SUBNODE}.fullsync32split."* > "$2/$SUBNODE"
 		fi
+	done
+	
+	for NODE in *.fullsync32rsrc; do
+		if [ ! -e "$NODE" ]; then break; fi
+		
+		SUBNODE=${NODE%%.fullsync32rsrc}
+		pushd "$2"
+		tar -xf "$1/${NODE}"
+		popd # back to the archive location
 	done
 	
 	# and recurse
@@ -278,8 +293,8 @@ if [ _"$1" = '_-b' ]; then
 	fullsync32rsync $(abspath $2) $(abspath $3)
 	f32backup $(abspath $2) $(abspath $3)
 elif [ _"$1" = '_-r' ]; then
-#	fullsync32rsync --exclude-from=$EXCLFILE $(abspath $2) $(abspath $3)
-	echo "Restore mode, coming soon"
+	fullsync32rsync --exclude-from=$EXCLFILE $(abspath $2) $(abspath $3)
+	f32restore $(abspath $2) $(abspath $3)
 elif [ _"$1" = '_-t' ]; then
 	echo Test mode - operating on file $2
 	echo MD5 hash     = $(getmd5 $2)

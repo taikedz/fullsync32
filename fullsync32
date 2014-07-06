@@ -43,6 +43,10 @@ touchorfail() { # argument - path to file to touch
 	maybefail $? "Could not create temp file for exclusion: $1"
 }
 
+echoerror() {
+	echo $@ > /dev/stderr
+}
+
 # serious issues with this command when testing in OS X terminal shell. retest as script
 filesize() {
 	if [ $ISMAC = 'yes' ]; then
@@ -71,7 +75,7 @@ function randomString {
 
 getmd5() {
 	NODE=$1
-	local md5res=$(md5sum $NODE)
+	local md5res=$(md5sum "$NODE")
 	if [ $ISMAC = 'yes' ]; then
 		echo $md5res | sed -E -e 's/MD5 \(.+\) = (.+)$/\1/g')
 	else
@@ -124,17 +128,91 @@ hasrsrc() {
 RSRC_CHECK=$(hasrsrc $RSRCTARS)
 # echo "Check for resources? --> $RSRC_CHECK"
 
+splitlarge() {
+	local NODE=$1
+	local DEST=$2
+	if [ $(filesize "$NODE") -gt 4000000000 ]; then
+		# split and move
+		# all files from splitting end in .split*
+		# the md5 file ends in .split-md5 and contains as single line the original md5
+		local SPLITPREFIX="${NODE}.split"
+		split -b 4GB -a 3 "$NODE" "$SPLITPREFIX."
+		echo $(getmd5 "$NODE") > "./${SPLITPREFIX}-md5"
+		fullsync32rsync "$SPLITPREFIX"* "$DEST" # glob on the outside :-)
+		# TODO -- error handling if rsync failed
+		# remove the split files
+		rm "$SPLITPREFIX"*
+	fi
+}
+
 # ==============================
 # Now do the actual work.
 
 # pass as $1 the live directory to process
 # pass as $2 the corresponding archive directory
-backup() {
+f32backup() {
 	cd "$1"
+	if [ ! -d "$2" ]; then # test with a large file in subdirectory, as only file
+		echoerror "The archive directory does not exist"
+		exit 2
+	fi
 	
 	for NODE in *; do
 		if [ -d "$NODE" ]; then
-			
+			f32backup "${1}${NODE}" "${2}${NODE}"
+			continue
+		fi
+		LGNODE=$NODE
+		
+		# check resource
+		if [ $(hasrsrc "$NODE") = "yes" ]; then
+			# process resources
+			tar -xzf "$NODE.rsrc" "$NODE"
+			LGNODE="$NODE.rsrc" # process the rsrc instead when checking size
+		fi
+		
+		if [ $(filesize "$LGNODE") -gt 4000000000 ]; then
+			# split and move
+			# all files from splitting end in .split*
+			# the md5 file ends in .split-md5 and contains as single line the original md5
+			local SPLITPREFIX="${LGNODE}.split"
+			split -b 4GB -a 3 "$LGNODE" "$SPLITPREFIX."
+			echo $(getmd5 "$LGNODE") > "./${SPLITPREFIX}-md5"
+			fullsync32rsync "$SPLITPREFIX"* "$DEST" # glob on the outside :-)
+			# TODO -- error handling if rsync failed
+			# remove the split files
+			rm "$SPLITPREFIX"*
+		fi
+		
+		if [ $(hasrsrc "$NODE") = "yes" ]; then
+			# cleanup the resource step
+			rm "$NODE.rsrc"
+		fi
+	done
+}
+
+# arg1 backup directory
+# arg2 live directory
+f32restore() {
+	cd "$1"
+	if [ ! -d "$2" ]; then # test with a large file in subdirectory, as only file
+		echoerror "The archive directory does not exist"
+		exit 2
+	fi
+	
+	for NODE in *.split-md5; do
+		if [ ${NODE#*.} = 'rsrc.split-md5' ]; then # hold on, not sure this is the correct syntax
+			# cat the split to tar -x
+			cat ${}
+		else
+			# cat straight to destination
+		fi
+	done
+	
+	# and recurse
+	for NODE in *; do
+		if [ -d "$NODE" ]; then
+			f32restore "${1}${NODE}" "${2}${NODE}"
 		fi
 	done
 }

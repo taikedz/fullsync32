@@ -1,7 +1,24 @@
 #! /bin/bash
+shopt -s expand_aliases
 
-alias fullsync32rsync='rsync -avz'
+#LGSIZE=4000000000
+LGSIZE=5000001
+EXCLFILE="/tmp/fullsync32exclusionfile"
 
+alias fullsync32rsync='rsync -avz --max-size=$LGSIZE'
+
+# ====================
+
+# if any file has ".fullsync32split" in its name that is not managed by this tool, there will be trouble...
+# but it's not likely
+# put caveat in documentation
+# --exclude-from=$EXCLFILE
+cat <<EOF > $EXCLFILE
+*.fullsync32split*
+*.fullsync32rsrc
+EOF
+
+if [ _$1 = '_-h' ]; then
 cat <<EOF
 Rsync post-processor for backing up Linux and Mac filesystems to FAT32
 
@@ -14,11 +31,11 @@ Building on top of rsync, this post-processor will ensure files with resource fo
 
 The post-processor is then also used during restore process, where the middle-files are excluded from the rsync restore, and then unpacked directly to disk.
 
-To override the rsync behaviour, set an alias for fullsync32rsync
+To override the rsync behaviour, set an alias for: fullsync32rsync
 
 By default, this will otherwise be
 
-$(alias fullsync32rsync)
+	$(alias fullsync32rsync)
 
 With exclusion files passed to it.
 
@@ -30,6 +47,8 @@ OPTIONS
 
 
 EOF
+exit
+fi
 
 # ==============================
 # generalized handles
@@ -45,6 +64,11 @@ touchorfail() { # argument - path to file to touch
 
 echoerror() {
 	echo $@ > /dev/stderr
+}
+
+# Debugging - write to stderr
+echotest() {
+	echoerror $@
 }
 
 # serious issues with this command when testing in OS X terminal shell. retest as script
@@ -77,9 +101,17 @@ getmd5() {
 	NODE=$1
 	local md5res=$(md5sum "$NODE")
 	if [ $ISMAC = 'yes' ]; then
-		echo $md5res | sed -E -e 's/MD5 \(.+\) = (.+)$/\1/g')
+		echo $md5res | sed -E -e 's/MD5 \(.+\) = (.+)$/\1/g'
 	else
-		echo $md5res | sed -E -e 's/^(.+) .+/\1/g')
+		echo $md5res | sed -E -e 's/^(.+) .+/\1/g'
+	fi
+}
+
+abspath() {
+	if [ _${1:0:1} = "_/" ]; then
+		echo $1
+	else
+		echo $PWD/$1
 	fi
 }
 
@@ -105,13 +137,14 @@ fi
 
 RSRCSTR="/..namedfork/rsrc"
 if [ $ISMAC = 'yes' ]; then
-	if [ "old"$(sw_vers | grep -Po "10\.[0-6]\.") = "old" ]; then
+	if [ "old"$(sw_vers | grep -Po "10\.[0-6]\.") != "old" ]; then
 		RSRCSTR="/rsrc" # different format pre-10.7
 	fi
 fi
 
 hasrsrc() {
 	MYFILE="$1$RSRCSTR"
+	#echotest ... ... PWD=$PWD MYFILE=$MYFILE
 	FOUNDRES=yes$(ls -l "$MYFILE" | grep -Po "0\s+[0-9]+\s+[a-zA-Z]");
 	# resource fork found to be zero length - returns string
 
@@ -122,28 +155,8 @@ hasrsrc() {
 		echo "no"
 	fi
 }
-# ==============================
-# check for RSRC presence
 
-RSRC_CHECK=$(hasrsrc $RSRCTARS)
-# echo "Check for resources? --> $RSRC_CHECK"
 
-splitlarge() {
-	local NODE=$1
-	local DEST=$2
-	if [ $(filesize "$NODE") -gt 4000000000 ]; then
-		# split and move
-		# all files from splitting end in .split*
-		# the md5 file ends in .split-md5 and contains as single line the original md5
-		local SPLITPREFIX="${NODE}.split"
-		split -b 4GB -a 3 "$NODE" "$SPLITPREFIX."
-		echo $(getmd5 "$NODE") > "./${SPLITPREFIX}-md5"
-		fullsync32rsync "$SPLITPREFIX"* "$DEST" # glob on the outside :-)
-		# TODO -- error handling if rsync failed
-		# remove the split files
-		rm "$SPLITPREFIX"*
-	fi
-}
 
 # ==============================
 # Now do the actual work.
@@ -152,7 +165,8 @@ splitlarge() {
 # pass as $2 the corresponding archive directory
 # both must be absolute
 f32backup() {
-	cd "$1"
+	pushd "$1"
+	#echotest ===== changed to $1 against $2
 	if [ ! -d "$2" ]; then # test with a large file in subdirectory, as only file
 		
 		# rsync did not create the directory... what's the problem here...?
@@ -166,36 +180,56 @@ f32backup() {
 			continue
 		fi
 		LGNODE=$NODE # the NODE that is the large file to process
+		#echotest ... preliminary: LGNODE=$LGNODE // NODE=$NODE
 		
 		# check resource
 		if [ $(hasrsrc "$NODE") = "yes" ]; then
 			# process resources
-			tar -xzf "$NODE.rsrc" "$NODE"
+			tar -czf "$NODE.fullsync32rsrc" "$NODE"
 			
 			# process the rsrc instead of the original, when checking size
-			LGNODE="$NODE.rsrc"
+			LGNODE="$NODE.fullsync32rsrc"
 		fi
+		#echotest ... after RSRC check: LGNODE=$LGNODE // NODE=$NODE
+		#echotest ... filsize LGNODE is $(filesize $LGNODE)
 		
-		if [ $(filesize "$LGNODE") -gt 4000000000 ]; then
+		if [ $(filesize "$LGNODE") -gt $LGSIZE ]; then
 			# split and move
-			# all files from splitting end in .split*
-			# the md5 file ends in .split-md5 and contains as single line the original md5
-			local SPLITPREFIX="${LGNODE}.split"
-			split -b 4GB -a 3 "$LGNODE" "$SPLITPREFIX."
+			# all files from splitting end in .fullsync32split*
+			# the md5 file ends in .fullsync32split-md5 and contains as single line the original md5
+			local SPLITPREFIX="${LGNODE}.fullsync32split"
+			split -b $LGSIZE -a 3 "$LGNODE" "$SPLITPREFIX."
 			echo $(getmd5 "$LGNODE") > "./${SPLITPREFIX}-md5"
-			fullsync32rsync "$SPLITPREFIX"* "$DEST" # glob on the outside :-)
+			# DEAC :
+			#echotest !! Current contents
+			#echotest "$SPLITPREFIX"* "$2"
+			fullsync32rsync "$SPLITPREFIX"* "$2" # glob on the outside :-)
 			# TODO -- error handling if rsync failed
 			# TODO -- handling hardlinks
 			
 			# cleanup the split files
 			rm "$SPLITPREFIX"*
+		elif [ $(hasrsrc "$NODE") = "yes" ]; then
+			# if file was not large, no need to sync... unless we're processing a large resource TAR'd file that shrank....!
+			#echotest ... we.re going to sync $LGNODE
+			#echotest /=========
+			#alias fullsync32rsync
+			fullsync32rsync "$LGNODE" "$2"
+			#echotest ==========/
 		fi
 		
+		#echotest Checking if resources need cleaning up...
 		if [ $(hasrsrc "$NODE") = "yes" ]; then
+			#echotest ... LGNODE for cleanup is $LGNODE
 			# cleanup the resource step
-			rm "$NODE.rsrc"
+			rm "$NODE.fullsync32rsrc"
+			rm "$2/$NODE"
 		fi
+		#echotest Processed a file! ==================
 	done
+	
+	popd
+	echotest Bubbling up!
 }
 
 # arg1 backup directory
@@ -212,21 +246,21 @@ f32restore() {
 		# TODO -- verify the permissions on the created directory
 	fi
 	
-	for NODE in *.split-md5; do
+	for NODE in *.fullsync32split-md5; do
 		# use deletion pattern to remove last two extensions
 		SUBNODE=${FNAM%%.split-md5} # returns name before .split-md5
-		if [ ${SUBNODE##*.} = 'rsrc' ]; then
+		if [ "${SUBNODE##*.}" = 'fullsync32rsrc' ]; then
 			# using tar - switch to destination directory
 			pushd "$2"
 			# cat the split to tar -x
-			cat "$1/${SUBNODE}.split.*" | tar -x
+			cat "$1/${SUBNODE}.fullsync32split.*" | tar -x
 			popd # back to the archive location
 		else
 			# if no change then don't bother
 			if [ $(cat $NODE) = $(getmd5 "$2/$SUBNODE") ]; then continue; fi
 			# cat straight to destination
 			# SUBNODE is name without the split extension, use it
-			cat "$1/${SUBNODE}.split.*" > "$2/$SUBNODE"
+			cat "$1/${SUBNODE}.fullsync32split.*" > "$2/$SUBNODE"
 		fi
 	done
 	
@@ -237,3 +271,20 @@ f32restore() {
 		fi
 	done
 }
+
+# ======================
+
+if [ _"$1" = '_-b' ]; then
+	fullsync32rsync $(abspath $2) $(abspath $3)
+	f32backup $(abspath $2) $(abspath $3)
+elif [ _"$1" = '_-r' ]; then
+#	fullsync32rsync --exclude-from=$EXCLFILE $(abspath $2) $(abspath $3)
+	echo "Restore mode, coming soon"
+elif [ _"$1" = '_-t' ]; then
+	echo Test mode - operating on file $2
+	echo MD5 hash     = $(getmd5 $2)
+	echo Has resource = $(hasrsrc $2)
+	echo File size    = $(filesize $2)
+else 
+	echoerror "'$1' is not a recognized mode"
+fi

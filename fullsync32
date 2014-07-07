@@ -1,8 +1,7 @@
 #! /bin/bash
 shopt -s expand_aliases
 
-#LGSIZE=4000000000
-LGSIZE=5000001
+LGSIZE=4000000000
 EXCLFILE="/tmp/fullsync32exclusionfile"
 
 alias fullsync32rsync='rsync -avz --max-size=$LGSIZE'
@@ -19,10 +18,11 @@ cat <<EOF > $EXCLFILE
 EOF
 
 if [ _$1 = '_-h' ]; then
-cat <<EOF
+cat <<EOF | less
 Rsync post-processor for backing up Linux and Mac filesystems to FAT32
 
-$0 { -b | -r } -live=LVIEDIR -archive=ARCHIVEDIR
+$0 -b LVIEDIR ARCHIVEDIR
+$0 -r ARCHIVEDIR LIVEDIR
 
 LIVEDIR is the directory that is normally in use.
 ARCHIVEDIR is the directory on the backup medium.
@@ -54,7 +54,11 @@ fi
 # generalized handles
 
 maybefail() { # arg1=exit code // arg2=message
-	if [ $1 != 0 ]; then echoerror "$2"; exit 1; fi
+	if [ $1 != 0 ]; then echoerror "$@"; exit 1; fi
+}
+
+maybeerror() {
+	if [ $1 != 0 ]; then echoerror "$@"; fi
 }
 
 touchorfail() { # argument - path to file to touch
@@ -73,10 +77,20 @@ echotest() {
 
 # serious issues with this command when testing in OS X terminal shell. retest as script
 filesize() {
+	local __myresult=0
 	if [ $ISMAC = 'yes' ]; then
-		echo $(stat -s $1 | sed -E -e "s/.*st_size=([0-9]+).*/\1/")
+		local statres=$(stat -s "$1")
+		OPRES=$?
+		__myresult=$(echoe $statres | sed -E -e "s/.*st_size=([0-9]+).*/\1/")
 	else # assumes Linux
-		echo $(stat -c%s $1)
+		__myresult=stat -c%s "$1"
+		OPRES=$?
+	fi
+	if [ $OPRES != 0 ]; then
+		maybeerror $OPRES Stat failed on file '"$1"' in $PWD
+		echo -1
+	else
+		echo $__myresult
 	fi
 }
 
@@ -84,7 +98,7 @@ function randomString {
 	# adapted from http://utdream.org/post.cfm/bash-generate-a-random-string
 	
 	# if a param was passed, it's the length of the string we want
-	if [[ -n $1 ]] && [[ "$1" -lt 20 ]]; then
+	if [[ -n "$1" ]] && [[ "$1" -lt 20 ]]; then
 		local myStrLength=$1;
 	else
 		# otherwise set to default
@@ -144,15 +158,23 @@ fi
 
 hasrsrc() {
 	MYFILE="$1$RSRCSTR"
-	#echotest ... ... PWD=$PWD MYFILE=$MYFILE
-	FOUNDRES=yes$(ls -l "$MYFILE" | grep -Po "0\s+[0-9]+\s+[a-zA-Z]");
-	# resource fork found to be zero length - returns string
-
-	# FOUNDRES is exactly "yes" if resource is non-zero
-	if [ "$FOUNDRES" = "yes" ]; then
-		echo "yes"
-	else
+	local LSRES=$(ls -l "$MYFILE")
+	
+	OPRES=$?
+	if [ $OPRES != 0 ]; then # this seems to be very dirty erro handling.
+		# TODO - read up on "traps"
+		maybeerror $OPRES Could not access $MYFILE in $PWD
 		echo "no"
+	else
+		FOUNDRES=yes$(echo $LSRES | grep -Po "0\s+[0-9]+\s+[a-zA-Z]");
+		# resource fork found to be zero length - returns string
+
+		# FOUNDRES is exactly "yes" if resource is non-zero
+		if [ "$FOUNDRES" = "yes" ]; then
+			echo "yes"
+		else
+			echo "no"
+		fi
 	fi
 }
 
@@ -165,22 +187,20 @@ hasrsrc() {
 # pass as $2 the corresponding archive directory
 # both must be absolute
 f32backup() {
-	pushd "$1"
-	#echotest ===== changed to $1 against $2
-	if [ ! -d "$2" ]; then # test with a large file in subdirectory, as only file
-		
+	pushd "$1" > /dev/null
+	if [ ! -d "$2" ]; then
 		# rsync did not create the directory... what's the problem here...?
 		echoerror "The archive directory does not exist"
 		exit 2
 	fi
 	
 	for NODE in *; do
+		if [ ! -e "$NODE" ]; then break; fi
 		if [ -d "$NODE" ]; then
 			f32backup "${1}/${NODE}" "${2}/${NODE}"
 			continue
 		fi
 		LGNODE=$NODE # the NODE that is the large file to process
-		#echotest ... preliminary: LGNODE=$LGNODE // NODE=$NODE
 		
 		# check resource
 		if [ $(hasrsrc "$NODE") = "yes" ]; then
@@ -190,53 +210,53 @@ f32backup() {
 			# process the rsrc instead of the original, when checking size
 			LGNODE="$NODE.fullsync32rsrc"
 		fi
-		#echotest ... after RSRC check: LGNODE=$LGNODE // NODE=$NODE
-		#echotest ... filsize LGNODE is $(filesize $LGNODE)
 		
-		if [ $(filesize "$LGNODE") -gt $LGSIZE ]; then
+		local __fsize=$(filesize "$LGNODE")
+		if [ $__fsize -lt 0 ]; then
+			# there was an error getting the filesize
+			# has already been reported; just move along
+			continue
+		elif [ $__fsize -gt $LGSIZE ]; then
 			# split and move
 			# all files from splitting end in .fullsync32split*
 			# the md5 file ends in .fullsync32split-md5 and contains as single line the original md5
 			local SPLITPREFIX="${LGNODE}.fullsync32split"
 			split -b $LGSIZE -a 3 "$LGNODE" "$SPLITPREFIX."
 			echo $(getmd5 "$LGNODE") > "./${SPLITPREFIX}-md5"
-			# DEAC :
-			#echotest !! Current contents
-			#echotest "$SPLITPREFIX"* "$2"
 			fullsync32rsync "$SPLITPREFIX"* "$2" # glob on the outside :-)
-			# TODO -- error handling if rsync failed
+			
+			# error handling if rsync failed
+			# do not interrupt
+			maybeerror $? "Rsync failed to backup large files: " "$SPLITPREFIX"* "$2" "from $1"
+			
 			# TODO -- handling hardlinks
 			
 			# cleanup the split files
 			rm "$SPLITPREFIX"*
 		elif [ $(hasrsrc "$NODE") = "yes" ]; then
 			# if file was not large, no need to sync... unless we're processing a large resource TAR'd file that shrank....!
-			#echotest ... we.re going to sync $LGNODE
-			#echotest /=========
-			#alias fullsync32rsync
 			fullsync32rsync "$LGNODE" "$2"
-			#echotest ==========/
+			
+			# error handling if rsync failed
+			# do not interrupt
+			maybeerror $? "Rsync failed: to copy over rsrc tar $LGNODE $2"
 		fi
 		
-		#echotest Checking if resources need cleaning up...
 		if [ $(hasrsrc "$NODE") = "yes" ]; then
-			#echotest ... LGNODE for cleanup is $LGNODE
 			# cleanup the resource step
 			rm "$NODE.fullsync32rsrc"
 			rm "$2/$NODE"
 		fi
-		#echotest Processed a file! ==================
 	done
 	
-	popd
-	echotest Bubbling up!
+	popd > /dev/null
 }
 
 # arg1 backup directory
 # arg2 live directory
 # we need both to be absolute
 f32restore() {
-	cd "$1"
+	pushd "$1" > /dev/null
 	if [ ! -d "$2" ]; then
 		# rsync didn't recreate this directory for some reason
 		# should we really override?
@@ -252,13 +272,12 @@ f32restore() {
 		
 		# use deletion pattern to remove last two extensions
 		SUBNODE=${NODE%%.fullsync32split-md5} # returns name before .fullsync32split-md5
-		echotest Processing $NODE and checking for "${SUBNODE##*.}"
 		if [ "${SUBNODE##*.}" = 'fullsync32rsrc' ]; then
 			# using tar - switch to destination directory
-			pushd "$2"
+			pushd "$2" > /dev/null
 			# cat the split to tar -x
 			cat "$1/${SUBNODE}.fullsync32rsrc."* | tar -x
-			popd # back to the archive location
+			popd > /dev/null # back to the archive location
 		else
 			# if no change then don't bother
 			if [ -f "$NODE" ]; then
@@ -274,27 +293,29 @@ f32restore() {
 		if [ ! -e "$NODE" ]; then break; fi
 		
 		SUBNODE=${NODE%%.fullsync32rsrc}
-		pushd "$2"
+		pushd "$2" > /dev/null
 		tar -xf "$1/${NODE}"
-		popd # back to the archive location
+		popd > /dev/null # back to the archive location
 	done
 	
 	# and recurse
 	for NODE in *; do
+		if [ ! -e "$NODE" ]; then break; fi # empty directory
 		if [ -d "$NODE" ]; then
 			f32restore "${1}/${NODE}" "${2}/${NODE}"
 		fi
 	done
+	popd > /dev/null
 }
 
 # ======================
 
 if [ _"$1" = '_-b' ]; then
-	fullsync32rsync $(abspath $2) $(abspath $3)
-	f32backup $(abspath $2) $(abspath $3)
+	fullsync32rsync "$(abspath $2)" "$(abspath $3)"
+	f32backup "$(abspath $2)" "$(abspath $3)"
 elif [ _"$1" = '_-r' ]; then
 	fullsync32rsync --exclude-from=$EXCLFILE $(abspath $2) $(abspath $3)
-	f32restore $(abspath $2) $(abspath $3)
+	f32restore "$(abspath $2)" "$(abspath $3)"
 elif [ _"$1" = '_-t' ]; then
 	echo Test mode - operating on file $2
 	echo MD5 hash     = $(getmd5 $2)

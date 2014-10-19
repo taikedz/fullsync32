@@ -34,6 +34,8 @@ If in archive mode (live directory to archive), files with resource forks are id
 
 In restore mode, (archive directory to live environment), the middle-man files and their MD5 reminders are excluded by name from the rsync restore. Then the post-processor iterates through the archive directories, unpacking TARs and CAT-ing split files, where MD5 sums do not match.
 
+Note - should use `find / -exec bash -c '[[ -s "$1/..namedfork/rsrc" ]]' _ {} \; -print` to find files with resource forks
+
 Future versions
 ===============
 
